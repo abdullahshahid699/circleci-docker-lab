@@ -1,16 +1,189 @@
 version: 2.1
 
 jobs:
+  # JOB 1: Build Docker image
   build:
     docker:
-      - image: cimg/base:stable
+      - image: cimg/node:20
+
     steps:
       - checkout
+
+      # Restore dependency cache
+      - restore_cache:
+          keys:
+            - npm-node20-v1-{{ checksum "package-lock.json" }}
+
+      # Install dependencies
       - run:
-          name: Verify CircleCI
-          command: echo "CircleCI pipeline is working!"
+          name: Install Node Dependencies
+          command: |
+            if [ -d node_modules/express ]; then
+              echo "Dependency cache hit! Skipping npm ci."
+            else
+              npm ci
+            fi
+      - save_cache:
+          key: npm-node20-v1-{{ checksum "package-lock.json" }}
+          paths:
+            - node_modules
+
+      # Enable Docker layer caching
+      - setup_remote_docker:
+          docker_layer_caching: true
+
+      # Build and export Docker image
+      - run:
+          name: Build Docker Image
+          command: |
+            IMAGE="$DOCKERHUB_USERNAME/circleci-docker-demo"
+
+            mkdir -p /tmp/workspace
+
+            docker build \
+              -t "$IMAGE:$CIRCLE_SHA1" \
+              -t "$IMAGE:latest" .
+
+            docker save \
+              -o /tmp/workspace/image.tar \
+              "$IMAGE:$CIRCLE_SHA1" \
+              "$IMAGE:latest"
+
+      # Share image with downstream jobs
+      - persist_to_workspace:
+          root: /tmp/workspace
+          paths:
+            - image.tar
+
+  # JOB 2: Test Docker container
+  test:
+    docker:
+      - image: cimg/base:stable
+
+    steps:
+      - attach_workspace:
+          at: /tmp/workspace
+
+      - setup_remote_docker:
+          docker_layer_caching: true
+
+      - run:
+          name: Test Container Health
+          command: |
+            IMAGE="$DOCKERHUB_USERNAME/circleci-docker-demo"
+
+            docker load -i /tmp/workspace/image.tar
+
+            docker run -d \
+              --name circleci-test \
+              -p 3000:3000 \
+              "$IMAGE:$CIRCLE_SHA1"
+
+            for i in {1..5}; do
+              if curl -fsS http://localhost:3000/health \
+                | grep -Eq '"status"[[:space:]]*:[[:space:]]*"healthy"'; then
+                echo "Container health test passed!"
+                docker rm -f circleci-test
+                exit 0
+              fi
+
+              echo "Waiting for application... attempt $i"
+              sleep 2
+            done
+
+            docker logs circleci-test
+            docker rm -f circleci-test || true
+            exit 1
+
+  # JOB 3: Dedicated validation gate
+  validation:
+    docker:
+      - image: cimg/base:stable
+
+    steps:
+      - attach_workspace:
+          at: /tmp/workspace
+
+      - setup_remote_docker:
+          docker_layer_caching: true
+
+      - run:
+          name: Validate Container Health
+          command: |
+            IMAGE="$DOCKERHUB_USERNAME/circleci-docker-demo"
+
+            docker load -i /tmp/workspace/image.tar
+
+            docker run -d \
+              --name circleci-validation \
+              -p 3000:3000 \
+              "$IMAGE:$CIRCLE_SHA1"
+
+            for i in {1..10}; do
+              echo "Health check attempt $i of 10"
+
+              if curl -fsS http://localhost:3000/health \
+                | grep -Eq '"status"[[:space:]]*:[[:space:]]*"healthy"'; then
+                echo "VALIDATION PASSED"
+                docker rm -f circleci-validation
+                exit 0
+              fi
+
+              if [ "$i" -lt 10 ]; then
+                sleep 5
+              fi
+            done
+
+            echo "VALIDATION FAILED"
+            docker logs circleci-validation
+            docker rm -f circleci-validation || true
+            exit 1
+
+  # JOB 4: Push image to Docker Hub
+  push:
+    docker:
+      - image: cimg/base:stable
+
+    steps:
+      - attach_workspace:
+          at: /tmp/workspace
+
+      - setup_remote_docker:
+          docker_layer_caching: true
+
+      - run:
+          name: Push Docker Image
+          command: |
+            IMAGE="$DOCKERHUB_USERNAME/circleci-docker-demo"
+
+            docker load -i /tmp/workspace/image.tar
+
+            echo "$DOCKERHUB_PASSWORD" | \
+              docker login \
+                --username "$DOCKERHUB_USERNAME" \
+                --password-stdin
+
+            docker push "$IMAGE:$CIRCLE_SHA1"
+            docker push "$IMAGE:latest"
+
+            echo "Docker images pushed successfully!"
 
 workflows:
   docker-ci:
     jobs:
       - build
+
+      - test:
+          requires:
+            - build
+
+      - validation:
+          requires:
+            - test
+
+      - push:
+          requires:
+            - validation
+          filters:
+            branches:
+              only: main
