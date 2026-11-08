@@ -1,0 +1,16 @@
+version: 2.1
+
+jobs:
+  build:
+    docker:
+      - image: cimg/base:stable
+    steps:
+      - checkout
+      - run:
+          name: Verify CircleCI
+          command: echo "CircleCI pipeline is working!"
+
+workflows:
+  docker-ci:
+    jobs:
+      - build
