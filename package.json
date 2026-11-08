@@ -1,0 +1,12 @@
+{
+  "name": "circleci-docker-demo",
+  "version": "1.0.0",
+  "description": "Docker CI/CD application using CircleCI",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
