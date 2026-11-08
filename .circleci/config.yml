@@ -76,12 +76,22 @@ jobs:
 
             docker run -d \
               --name circleci-test \
-              -p 3000:3000 \
               "$IMAGE:$CIRCLE_SHA1"
 
             for i in {1..15}; do
-              if curl -fsS http://localhost:3000/health \
-                | grep -Eq '"status"[[:space:]]*:[[:space:]]*"healthy"'; then
+              if docker exec circleci-test node -e '
+                const http = require("http");
+                http.get("http://127.0.0.1:3000/health", res => {
+                  let body = "";
+                  res.on("data", chunk => body += chunk);
+                  res.on("end", () => {
+                    console.log("HTTP:", res.statusCode, body);
+                    if (res.statusCode !== 200 || !body.includes("healthy")) {
+                      process.exit(1);
+                    }
+                  });
+                }).on("error", () => process.exit(1));
+              '; then
                 echo "Container health test passed!"
                 docker rm -f circleci-test
                 exit 0
