@@ -4,7 +4,7 @@ jobs:
   # JOB 1: Build Docker image
   build:
     docker:
-      - image: cimg/node:20
+      - image: cimg/node:20.19
 
     steps:
       - checkout
